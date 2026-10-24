@@ -1,0 +1,2712 @@
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8088
+#define SIZE 1024
+
+int main(void)
+{
+    int server_fd, client_fd, opt = 1;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    char buffer[SIZE];
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_fd < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
+               &opt, sizeof(opt));
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr,
+             sizeof(server_addr)) < 0) {
+        perror("bind");
+        close(server_fd);
+        return 1;
+    }
+
+    if (listen(server_fd, 5) < 0) {
+        perror("listen");
+        close(server_fd);
+        return 1;
+    }
+
+    printf("Palindrome server running on port %d\n", PORT);
+    printf("Waiting for client...\n");
+
+    while (1) {
+        client_fd = accept(server_fd,
+            (struct sockaddr *)&client_addr, &addr_len);
+
+        if (client_fd < 0) {
+            perror("accept");
+            continue;
+        }
+
+        printf("Client connected.\n");
+
+        while (1) {
+            size_t i = 0;
+            char ch;
+
+            while (i < SIZE - 1) {
+                ssize_t n = recv(client_fd, &ch, 1, 0);
+
+                if (n <= 0)
+                    break;
+
+                if (ch == '\n')
+                    break;
+
+                if (ch != '\r')
+                    buffer[i++] = ch;
+            }
+
+            if (i == 0)
+                break;
+
+            buffer[i] = '\0';
+
+            if (strcmp(buffer, "exit") == 0) {
+                send(client_fd, "Goodbye\n", 8, 0);
+                break;
+            }
+
+            int left = 0;
+            int right = (int)strlen(buffer) - 1;
+            int palindrome = 1;
+
+            while (left < right) {
+                if (buffer[left] != buffer[right]) {
+                    palindrome = 0;
+                    break;
+                }
+
+                left++;
+                right--;
+            }
+
+            if (palindrome)
+                send(client_fd, "Palindrome\n", 11, 0);
+            else
+                send(client_fd, "Not a palindrome\n", 17, 0);
+
+            printf("Input: %s | Result: %s\n",
+                   buffer,
+                   palindrome ? "Palindrome" : "Not a palindrome");
+        }
+
+        close(client_fd);
+        printf("Client disconnected.\n");
+    }
+
+    close(server_fd);
+    return 0;
+}
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8088
+#define SIZE 1024
+
+int main(void)
+{
+    int sock;
+    struct sockaddr_in server_addr;
+    char buffer[SIZE];
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (sock < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+
+    if (connect(sock, (struct sockaddr *)&server_addr,
+                sizeof(server_addr)) < 0) {
+        perror("connect");
+        close(sock);
+        return 1;
+    }
+
+    printf("Connected to palindrome server.\n");
+    printf("Enter 'exit' to quit.\n");
+
+    while (1) {
+        printf("\nEnter a string: ");
+
+        if (fgets(buffer, sizeof(buffer), stdin) == NULL)
+            break;
+
+        buffer[strcspn(buffer, "\r\n")] = '\0';
+
+        char message[SIZE];
+        snprintf(message, sizeof(message), "%.1022s\n", buffer);
+
+        if (send(sock, message, strlen(message), 0) < 0)
+            break;
+
+        size_t i = 0;
+        char ch;
+
+        while (i < SIZE - 1) {
+            ssize_t n = recv(sock, &ch, 1, 0);
+
+            if (n <= 0)
+                break;
+
+            if (ch == '\n')
+                break;
+
+            message[i++] = ch;
+        }
+
+        if (i == 0)
+            break;
+
+        message[i] = '\0';
+        printf("Server response: %s\n", message);
+
+        if (strcmp(buffer, "exit") == 0)
+            break;
+    }
+
+    close(sock);
+    return 0;
+}
+
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <time.h>
+
+#define PORT 8089
+#define MAX 200
+#define SIZE 4096
+#define FILE_NAME "students.txt"
+#define LOG_NAME "student_log.txt"
+#define SUBJECTS 5
+
+typedef struct {
+    char reg[30];
+    char name[50];
+    char dept[30];
+    int semester;
+    int marks[SUBJECTS];
+    int total;
+    float cgpa;
+    char grade[5];
+} Student;
+
+Student students[MAX];
+int count = 0;
+
+int send_line(int sock, const char *msg)
+{
+    char output[SIZE];
+    int len = snprintf(output, sizeof(output), "%s\n", msg);
+
+    if (len < 0 || len >= SIZE)
+        return -1;
+
+    int sent = 0;
+
+    while (sent < len) {
+        ssize_t n = send(sock, output + sent, len - sent, 0);
+        if (n <= 0)
+            return -1;
+        sent += n;
+    }
+
+    return 0;
+}
+
+int recv_line(int sock, char *buffer, size_t size)
+{
+    size_t i = 0;
+    char ch;
+
+    while (i < size - 1) {
+        ssize_t n = recv(sock, &ch, 1, 0);
+
+        if (n <= 0)
+            return 0;
+
+        if (ch == '\n')
+            break;
+
+        if (ch != '\r')
+            buffer[i++] = ch;
+    }
+
+    buffer[i] = '\0';
+    return 1;
+}
+
+void log_activity(const char *action)
+{
+    FILE *fp = fopen(LOG_NAME, "a");
+    time_t now = time(NULL);
+    struct tm tm_info;
+    char timestamp[30];
+
+    localtime_r(&now, &tm_info);
+    strftime(timestamp, sizeof(timestamp),
+             "%Y-%m-%d %H:%M:%S", &tm_info);
+
+    printf("[%s] %s\n", timestamp, action);
+
+    if (fp != NULL) {
+        fprintf(fp, "[%s] %s\n", timestamp, action);
+        fclose(fp);
+    }
+}
+
+void calculate(Student *s)
+{
+    s->total = 0;
+
+    for (int i = 0; i < SUBJECTS; i++)
+        s->total += s->marks[i];
+
+    float average = (float)s->total / SUBJECTS;
+    s->cgpa = average / 10.0f;
+
+    if (average >= 90)
+        strcpy(s->grade, "O");
+    else if (average >= 80)
+        strcpy(s->grade, "A+");
+    else if (average >= 70)
+        strcpy(s->grade, "A");
+    else if (average >= 60)
+        strcpy(s->grade, "B+");
+    else if (average >= 50)
+        strcpy(s->grade, "B");
+    else
+        strcpy(s->grade, "F");
+}
+
+int find_student(const char *reg)
+{
+    for (int i = 0; i < count; i++) {
+        if (strcmp(students[i].reg, reg) == 0)
+            return i;
+    }
+
+    return -1;
+}
+
+void load_records(void)
+{
+    FILE *fp = fopen(FILE_NAME, "r");
+
+    if (fp == NULL)
+        return;
+
+    char line[512];
+
+    while (fgets(line, sizeof(line), fp) != NULL &&
+           count < MAX) {
+        Student s = {0};
+
+        int fields = sscanf(line,
+            "%29[^|]|%49[^|]|%29[^|]|%d|%d|%d|%d|%d",
+            s.reg, s.name, s.dept, &s.semester,
+            &s.marks[0], &s.marks[1],
+            &s.marks[2], &s.marks[3]);
+
+        /*
+           The fifth mark is read separately below.
+           The saved format contains all five marks.
+        */
+        if (fields != 8)
+            continue;
+
+        char *last = strrchr(line, '|');
+
+        if (last == NULL)
+            continue;
+
+        if (sscanf(last + 1, "%d", &s.marks[4]) != 1)
+            continue;
+
+        calculate(&s);
+
+        if (find_student(s.reg) == -1)
+            students[count++] = s;
+    }
+
+    fclose(fp);
+}
+
+int save_records(void)
+{
+    FILE *fp = fopen(FILE_NAME, "w");
+
+    if (fp == NULL)
+        return 0;
+
+    for (int i = 0; i < count; i++) {
+        Student *s = &students[i];
+
+        fprintf(fp, "%s|%s|%s|%d|%d|%d|%d|%d|%d\n",
+            s->reg, s->name, s->dept, s->semester,
+            s->marks[0], s->marks[1], s->marks[2],
+            s->marks[3], s->marks[4]);
+    }
+
+    fclose(fp);
+    return 1;
+}
+
+int valid_student(const Student *s)
+{
+    if (strlen(s->reg) == 0 ||
+        strlen(s->name) == 0 ||
+        strlen(s->dept) == 0)
+        return 0;
+
+    if (s->semester < 1 || s->semester > 8)
+        return 0;
+
+    for (int i = 0; i < SUBJECTS; i++) {
+        if (s->marks[i] < 0 || s->marks[i] > 100)
+            return 0;
+    }
+
+    return 1;
+}
+
+int parse_student(char *request, Student *s)
+{
+    char *saveptr;
+    char *token = strtok_r(request, "|", &saveptr);
+    int field = 0;
+
+    memset(s, 0, sizeof(*s));
+
+    while (token != NULL) {
+        switch (field) {
+        case 1:
+            snprintf(s->reg, sizeof(s->reg), "%s", token);
+            break;
+        case 2:
+            snprintf(s->name, sizeof(s->name), "%s", token);
+            break;
+        case 3:
+            snprintf(s->dept, sizeof(s->dept), "%s", token);
+            break;
+        case 4:
+            s->semester = atoi(token);
+            break;
+        case 5:
+        case 6:
+        case 7:
+        case 8:
+        case 9:
+            s->marks[field - 5] = atoi(token);
+            break;
+        }
+
+        field++;
+        token = strtok_r(NULL, "|", &saveptr);
+    }
+
+    if (field != 10 || !valid_student(s))
+        return 0;
+
+    calculate(s);
+    return 1;
+}
+
+void process_request(int sock, char *request)
+{
+    char response[SIZE];
+    char action[20] = "";
+    char reg[30] = "";
+
+    if (sscanf(request, "%19[^|]", action) != 1) {
+        send_line(sock, "ERROR: Invalid request.");
+        return;
+    }
+
+    if (strcmp(action, "ADD") == 0 ||
+        strcmp(action, "UPDATE") == 0) {
+
+        Student s;
+
+        if (!parse_student(request, &s)) {
+            send_line(sock,
+                "ERROR: Invalid data. Use valid fields and marks 0-100.");
+            return;
+        }
+
+        int index = find_student(s.reg);
+
+        if (strcmp(action, "ADD") == 0) {
+            if (index != -1) {
+                send_line(sock, "ERROR: Register number already exists.");
+                return;
+            }
+
+            if (count >= MAX) {
+                send_line(sock, "ERROR: Student storage is full.");
+                return;
+            }
+
+            students[count++] = s;
+        } else {
+            if (index == -1) {
+                send_line(sock, "ERROR: Student not found.");
+                return;
+            }
+
+            students[index] = s;
+        }
+
+        if (!save_records()) {
+            send_line(sock, "ERROR: Cannot save student file.");
+            return;
+        }
+
+        snprintf(response, sizeof(response),
+                 "SUCCESS: %s completed. Total=%d Grade=%s CGPA=%.2f",
+                 action, s.total, s.grade, s.cgpa);
+        send_line(sock, response);
+
+        snprintf(response, sizeof(response),
+                 "%s student %s (%s)", action, s.name, s.reg);
+        log_activity(response);
+    }
+    else if (strcmp(action, "LIST") == 0) {
+        if (count == 0) {
+            send_line(sock, "No student records found.");
+            return;
+        }
+
+        for (int i = 0; i < count; i++) {
+            Student *s = &students[i];
+
+            snprintf(response, sizeof(response),
+                "Reg=%s Name=%s Dept=%s Sem=%d Marks=%d,%d,%d,%d,%d Total=%d Grade=%s CGPA=%.2f",
+                s->reg, s->name, s->dept, s->semester,
+                s->marks[0], s->marks[1], s->marks[2],
+                s->marks[3], s->marks[4],
+                s->total, s->grade, s->cgpa);
+
+            if (send_line(sock, response) < 0)
+                return;
+        }
+
+        send_line(sock, "END");
+        log_activity("Displayed all student records");
+    }
+    else if (strcmp(action, "DELETE") == 0) {
+        if (sscanf(request, "DELETE|%29s", reg) != 1) {
+            send_line(sock, "ERROR: Use DELETE|register_number");
+            return;
+        }
+
+        int index = find_student(reg);
+
+        if (index == -1) {
+            send_line(sock, "ERROR: Student not found.");
+            return;
+        }
+
+        for (int i = index; i < count - 1; i++)
+            students[i] = students[i + 1];
+
+        count--;
+
+        if (!save_records()) {
+            send_line(sock, "ERROR: Cannot save student file.");
+            return;
+        }
+
+        send_line(sock, "SUCCESS: Student deleted.");
+        log_activity("Deleted student record");
+    }
+    else if (strcmp(action, "TOPPER") == 0) {
+        if (count == 0) {
+            send_line(sock, "No student records found.");
+            return;
+        }
+
+        int best = 0;
+
+        for (int i = 1; i < count; i++) {
+            if (students[i].total > students[best].total)
+                best = i;
+        }
+
+        Student *s = &students[best];
+
+        snprintf(response, sizeof(response),
+            "CLASS TOPPER: Reg=%s Name=%s Total=%d/500 Grade=%s CGPA=%.2f",
+            s->reg, s->name, s->total, s->grade, s->cgpa);
+
+        send_line(sock, response);
+        log_activity("Class topper requested");
+    }
+    else if (strcmp(action, "EXIT") == 0) {
+        send_line(sock, "Goodbye.");
+    }
+    else {
+        send_line(sock, "ERROR: Invalid operation.");
+    }
+}
+
+void *handle_client(void *arg)
+{
+    int sock = *(int *)arg;
+    free(arg);
+
+    char request[SIZE];
+
+    while (recv_line(sock, request, sizeof(request))) {
+        if (strcmp(request, "EXIT") == 0) {
+            send_line(sock, "Goodbye.");
+            break;
+        }
+
+        process_request(sock, request);
+    }
+
+    close(sock);
+    return NULL;
+}
+
+int main(void)
+{
+    int server_fd, client_fd, opt = 1;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+
+    load_records();
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_fd < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
+               &opt, sizeof(opt));
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr,
+             sizeof(server_addr)) < 0) {
+        perror("bind");
+        close(server_fd);
+        return 1;
+    }
+
+    if (listen(server_fd, 10) < 0) {
+        perror("listen");
+        close(server_fd);
+        return 1;
+    }
+
+    printf("Student Result Server running on port %d\n", PORT);
+    printf("Loaded %d student records from %s\n", count, FILE_NAME);
+
+    while (1) {
+        client_fd = accept(server_fd,
+            (struct sockaddr *)&client_addr, &addr_len);
+
+        if (client_fd < 0) {
+            perror("accept");
+            continue;
+        }
+
+        int *arg = malloc(sizeof(int));
+
+        if (arg == NULL) {
+            close(client_fd);
+            continue;
+        }
+
+        *arg = client_fd;
+        pthread_t thread;
+
+        if (pthread_create(&thread, NULL,
+                           handle_client, arg) != 0) {
+            perror("pthread_create");
+            close(client_fd);
+            free(arg);
+            continue;
+        }
+
+        pthread_detach(thread);
+    }
+
+    close(server_fd);
+    return 0;
+}
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8089
+#define SIZE 4096
+
+int send_line(int sock, const char *msg)
+{
+    char output[SIZE];
+    int len = snprintf(output, sizeof(output), "%s\n", msg);
+
+    if (len < 0 || len >= SIZE)
+        return -1;
+
+    int sent = 0;
+
+    while (sent < len) {
+        ssize_t n = send(sock, output + sent, len - sent, 0);
+        if (n <= 0)
+            return -1;
+        sent += n;
+    }
+
+    return 0;
+}
+
+int recv_line(int sock, char *buffer, size_t size)
+{
+    size_t i = 0;
+    char ch;
+
+    while (i < size - 1) {
+        ssize_t n = recv(sock, &ch, 1, 0);
+
+        if (n <= 0)
+            return 0;
+
+        if (ch == '\n')
+            break;
+
+        if (ch != '\r')
+            buffer[i++] = ch;
+    }
+
+    buffer[i] = '\0';
+    return 1;
+}
+
+void clear_input(void)
+{
+    int ch;
+    while ((ch = getchar()) != '\n' && ch != EOF) {}
+}
+
+int read_student(char *request, size_t size, const char *action)
+{
+    char reg[30], name[50], dept[30];
+    int semester, marks[5];
+
+    printf("Register number (no spaces): ");
+    if (scanf("%29s", reg) != 1)
+        return 0;
+
+    printf("Student name (no spaces): ");
+    if (scanf("%49s", name) != 1)
+        return 0;
+
+    printf("Department (no spaces): ");
+    if (scanf("%29s", dept) != 1)
+        return 0;
+
+    printf("Semester (1-8): ");
+    if (scanf("%d", &semester) != 1)
+        return 0;
+
+    printf("Enter marks for 5 subjects (0-100): ");
+
+    for (int i = 0; i < 5; i++) {
+        if (scanf("%d", &marks[i]) != 1)
+            return 0;
+    }
+
+    clear_input();
+
+    int len = snprintf(request, size,
+        "%s|%s|%s|%s|%d|%d|%d|%d|%d|%d",
+        action, reg, name, dept, semester,
+        marks[0], marks[1], marks[2], marks[3], marks[4]);
+
+    return len >= 0 && (size_t)len < size;
+}
+
+int main(void)
+{
+    int sock;
+    struct sockaddr_in server_addr;
+    char request[SIZE];
+    char response[SIZE];
+    int choice;
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (sock < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+
+    if (connect(sock, (struct sockaddr *)&server_addr,
+                sizeof(server_addr)) < 0) {
+        perror("connect");
+        close(sock);
+        return 1;
+    }
+
+    printf("Connected to Student Result Management Server.\n");
+
+    while (1) {
+        printf("\n===== STUDENT RESULT MANAGEMENT =====\n");
+        printf("1. Add student\n");
+        printf("2. Display all students\n");
+        printf("3. Update student\n");
+        printf("4. Delete student\n");
+        printf("5. Display class topper\n");
+        printf("6. Exit\n");
+        printf("Enter choice: ");
+
+        if (scanf("%d", &choice) != 1) {
+            clear_input();
+            printf("Invalid choice.\n");
+            continue;
+        }
+
+        clear_input();
+
+        switch (choice) {
+        case 1:
+            if (!read_student(request, sizeof(request), "ADD")) {
+                printf("Invalid input.\n");
+                continue;
+            }
+            break;
+
+        case 2:
+            strcpy(request, "LIST");
+            break;
+
+        case 3:
+            if (!read_student(request, sizeof(request), "UPDATE")) {
+                printf("Invalid input.\n");
+                continue;
+            }
+            break;
+
+        case 4: {
+            char reg[30];
+
+            printf("Enter register number to delete: ");
+
+            if (scanf("%29s", reg) != 1) {
+                clear_input();
+                continue;
+            }
+
+            clear_input();
+
+            snprintf(request, sizeof(request),
+                     "DELETE|%s", reg);
+            break;
+        }
+
+        case 5:
+            strcpy(request, "TOPPER");
+            break;
+
+        case 6:
+            strcpy(request, "EXIT");
+            send_line(sock, request);
+
+            if (recv_line(sock, response, sizeof(response)))
+                printf("%s\n", response);
+
+            close(sock);
+            return 0;
+
+        default:
+            printf("Invalid choice. Select 1-6.\n");
+            continue;
+        }
+
+        if (send_line(sock, request) < 0) {
+            printf("Failed to send request.\n");
+            break;
+        }
+
+        do {
+            if (!recv_line(sock, response, sizeof(response))) {
+                printf("Server disconnected.\n");
+                close(sock);
+                return 1;
+            }
+
+            if (strcmp(response, "END") == 0)
+                break;
+
+            printf("%s\n", response);
+
+        } while (strcmp(request, "LIST") == 0);
+    }
+
+    close(sock);
+    return 0;
+}
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <unistd.h>
+#include <time.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8092
+#define SIZE 1024
+#define MAX_BOOKS 5
+
+typedef struct {
+    int id;
+    char title[50];
+    char author[40];
+    int available;
+} Book;
+
+Book books[MAX_BOOKS] = {
+    {1, "CProgramming", "Kernighan", 1},
+    {2, "ComputerNetworks", "Tanenbaum", 1},
+    {3, "OperatingSystems", "Galvin", 1},
+    {4, "DatabaseSystems", "Navathe", 1},
+    {5, "DataStructures", "MarkAllen", 1}
+};
+
+void log_event(const char *event)
+{
+    FILE *fp = fopen("q1_library_log.txt", "a");
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char timestamp[30] = "unknown-time";
+
+    if (tm_info != NULL)
+        strftime(timestamp, sizeof(timestamp),
+                 "%Y-%m-%d %H:%M:%S", tm_info);
+
+    printf("[%s] %s\n", timestamp, event);
+
+    if (fp != NULL) {
+        fprintf(fp, "[%s] %s\n", timestamp, event);
+        fclose(fp);
+    }
+}
+
+void save_books(void)
+{
+    FILE *fp = fopen("q1_books.txt", "w");
+
+    if (fp == NULL) {
+        perror("Book database");
+        return;
+    }
+
+    for (int i = 0; i < MAX_BOOKS; i++)
+        fprintf(fp, "%d %d\n", books[i].id, books[i].available);
+
+    fclose(fp);
+}
+
+void load_books(void)
+{
+    FILE *fp = fopen("q1_books.txt", "r");
+    int id, available;
+
+    if (fp == NULL)
+        return;
+
+    while (fscanf(fp, "%d %d", &id, &available) == 2) {
+        for (int i = 0; i < MAX_BOOKS; i++) {
+            if (books[i].id == id &&
+                (available == 0 || available == 1))
+                books[i].available = available;
+        }
+    }
+
+    fclose(fp);
+}
+
+int find_book(int id)
+{
+    for (int i = 0; i < MAX_BOOKS; i++)
+        if (books[i].id == id)
+            return i;
+
+    return -1;
+}
+
+void process_request(const char *request,
+                     char *response, size_t size)
+{
+    int id;
+    char title[50];
+
+    if (strcmp(request, "LIST") == 0) {
+        size_t used = 0;
+
+        for (int i = 0; i < MAX_BOOKS; i++) {
+            int n = snprintf(response + used, size - used,
+                "ID=%d Title=%s Author=%s Status=%s\n",
+                books[i].id, books[i].title, books[i].author,
+                books[i].available ? "Available" : "Issued");
+
+            if (n < 0 || (size_t)n >= size - used)
+                break;
+
+            used += (size_t)n;
+        }
+    }
+    else if (sscanf(request, "SEARCH %49s", title) == 1) {
+        int found = 0;
+
+        for (int i = 0; i < MAX_BOOKS; i++) {
+            if (strcasestr(books[i].title, title) ||
+                strcasestr(books[i].author, title)) {
+                snprintf(response, size,
+                    "ID=%d Title=%s Author=%s Status=%s",
+                    books[i].id, books[i].title, books[i].author,
+                    books[i].available ? "Available" : "Issued");
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found)
+            snprintf(response, size, "ERROR: Book not found.");
+    }
+    else if (sscanf(request, "ISSUE %d", &id) == 1) {
+        int index = find_book(id);
+
+        if (index < 0)
+            snprintf(response, size, "ERROR: Invalid book ID.");
+        else if (!books[index].available)
+            snprintf(response, size, "ERROR: Book already issued.");
+        else {
+            books[index].available = 0;
+            save_books();
+            snprintf(response, size, "SUCCESS: %s issued.", books[index].title);
+        }
+    }
+    else if (sscanf(request, "RETURN %d", &id) == 1) {
+        int index = find_book(id);
+
+        if (index < 0)
+            snprintf(response, size, "ERROR: Invalid book ID.");
+        else if (books[index].available)
+            snprintf(response, size, "ERROR: Book is not issued.");
+        else {
+            books[index].available = 1;
+            save_books();
+            snprintf(response, size, "SUCCESS: %s returned.", books[index].title);
+        }
+    }
+    else {
+        snprintf(response, size,
+                 "ERROR: Invalid request. Use LIST, SEARCH, ISSUE, RETURN.");
+    }
+}
+
+int main(void)
+{
+    int sock;
+    struct sockaddr_in server, client;
+    socklen_t client_len = sizeof(client);
+    char request[SIZE], response[SIZE];
+
+    load_books();
+
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    memset(&server, 0, sizeof(server));
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(PORT);
+
+    if (bind(sock, (struct sockaddr *)&server, sizeof(server)) < 0) {
+        perror("bind");
+        close(sock);
+        return 1;
+    }
+
+    printf("UDP Library Server running on port %d\n", PORT);
+
+    while (1) {
+        ssize_t n = recvfrom(sock, request, sizeof(request) - 1, 0,
+            (struct sockaddr *)&client, &client_len);
+
+        if (n < 0) {
+            perror("recvfrom");
+            continue;
+        }
+
+        request[n] = '\0';
+
+        char event[SIZE];
+        snprintf(event, sizeof(event), "Request received: %.900s", request);
+        log_event(event);
+
+        if (strncmp(request, "Q1 ", 3) != 0) {
+            snprintf(response, sizeof(response),
+                     "ERROR: Invalid packet format.");
+        } else {
+            process_request(request + 3, response, sizeof(response));
+        }
+
+        if (sendto(sock, response, strlen(response), 0,
+                   (struct sockaddr *)&client, client_len) < 0) {
+            perror("sendto");
+        }
+    }
+
+    close(sock);
+    return 0;
+}
+
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+
+#define PORT 8092
+#define SIZE 1024
+#define MAX_RETRIES 3
+
+int main(void)
+{
+    int sock, choice, id;
+    struct sockaddr_in server;
+    struct timeval timeout = {2, 0};
+    socklen_t server_len = sizeof(server);
+    char request[SIZE], response[SIZE], term[50];
+
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+               &timeout, sizeof(timeout));
+
+    memset(&server, 0, sizeof(server));
+    server.sin_family = AF_INET;
+    server.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server.sin_addr);
+
+    while (1) {
+        printf("\n===== UDP LIBRARY MANAGEMENT =====\n");
+        printf("1. List all books\n");
+        printf("2. Search book\n");
+        printf("3. Issue book\n");
+        printf("4. Return book\n");
+        printf("5. Exit\n");
+        printf("Enter choice: ");
+
+        if (scanf("%d", &choice) != 1) {
+            int ch;
+            while ((ch = getchar()) != '\n' && ch != EOF) {}
+            printf("Invalid input.\n");
+            continue;
+        }
+
+        if (choice == 1)
+            snprintf(request, sizeof(request), "Q1 LIST");
+        else if (choice == 2) {
+            printf("Enter title/author (one word): ");
+            scanf("%49s", term);
+            snprintf(request, sizeof(request), "Q1 SEARCH %s", term);
+        }
+        else if (choice == 3) {
+            printf("Enter book ID: ");
+            if (scanf("%d", &id) != 1) {
+                printf("Invalid ID.\n");
+                return 1;
+            }
+            snprintf(request, sizeof(request), "Q1 ISSUE %d", id);
+        }
+        else if (choice == 4) {
+            printf("Enter book ID: ");
+            if (scanf("%d", &id) != 1) {
+                printf("Invalid ID.\n");
+                return 1;
+            }
+            snprintf(request, sizeof(request), "Q1 RETURN %d", id);
+        }
+        else if (choice == 5) {
+            printf("Client terminated.\n");
+            break;
+        }
+        else {
+            printf("Choose 1 to 5.\n");
+            continue;
+        }
+
+        int received = 0;
+
+        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            printf("Sending request (attempt %d)...\n", attempt);
+
+            if (sendto(sock, request, strlen(request), 0,
+                       (struct sockaddr *)&server,
+                       sizeof(server)) < 0) {
+                perror("sendto");
+                break;
+            }
+
+            ssize_t n = recvfrom(sock, response, sizeof(response) - 1,
+                                 0, (struct sockaddr *)&server,
+                                 &server_len);
+
+            if (n >= 0) {
+                response[n] = '\0';
+                printf("Server ACK/response:\n%s\n", response);
+                received = 1;
+                break;
+            }
+
+            printf("Timeout: no response received.\n");
+        }
+
+        if (!received)
+            printf("Server did not respond after %d attempts.\n",
+                   MAX_RETRIES);
+    }
+
+    close(sock);
+    return 0;
+}
+
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <time.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8094
+#define SIZE 1024
+#define MAX_STUDENTS 5
+
+typedef struct {
+    char regno[20];
+    char name[50];
+    char department[40];
+    int semester;
+    float cgpa;
+} Student;
+
+Student students[MAX_STUDENTS] = {
+    {"2026001", "Arun", "CSE", 5, 8.7},
+    {"2026002", "Priya", "IT", 5, 9.1},
+    {"2026003", "Kumar", "ECE", 3, 8.2},
+    {"2026004", "Divya", "CSE", 5, 9.4},
+    {"2026005", "Ravi", "EEE", 3, 7.9}
+};
+
+void log_event(const char *event)
+{
+    FILE *fp = fopen("q4_student_log.txt", "a");
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char timestamp[30] = "unknown-time";
+
+    if (tm_info != NULL)
+        strftime(timestamp, sizeof(timestamp),
+                 "%Y-%m-%d %H:%M:%S", tm_info);
+
+    printf("[%s] %s\n", timestamp, event);
+
+    if (fp != NULL) {
+        fprintf(fp, "[%s] %s\n", timestamp, event);
+        fclose(fp);
+    }
+}
+
+int main(void)
+{
+    int sock;
+    struct sockaddr_in server, client;
+    socklen_t client_len;
+    char request[SIZE], response[SIZE];
+
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    memset(&server, 0, sizeof(server));
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(PORT);
+
+    if (bind(sock, (struct sockaddr *)&server, sizeof(server)) < 0) {
+        perror("bind");
+        close(sock);
+        return 1;
+    }
+
+    printf("UDP Student Lookup Server running on port %d\n", PORT);
+
+    while (1) {
+        client_len = sizeof(client);
+
+        ssize_t n = recvfrom(sock, request, sizeof(request) - 1, 0,
+            (struct sockaddr *)&client, &client_len);
+
+        if (n < 0) {
+            perror("recvfrom");
+            continue;
+        }
+
+        request[n] = '\0';
+
+        int found = 0;
+
+        for (int i = 0; i < MAX_STUDENTS; i++) {
+            if (strcmp(request, students[i].regno) == 0) {
+                snprintf(response, sizeof(response),
+                    "Registration No: %s\nName: %s\nDepartment: %s\nSemester: %d\nCGPA: %.2f",
+                    students[i].regno,
+                    students[i].name,
+                    students[i].department,
+                    students[i].semester,
+                    students[i].cgpa);
+
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found) {
+            if (strlen(request) == 0 ||
+                strspn(request, "0123456789") != strlen(request)) {
+                snprintf(response, sizeof(response),
+                         "ERROR: Invalid registration number.");
+            } else {
+                snprintf(response, sizeof(response),
+                         "ERROR: Student record not found.");
+            }
+        }
+
+        char event[SIZE];
+        snprintf(event, sizeof(event),
+                 "Lookup request for registration number: %.900s",
+                 request);
+        log_event(event);
+
+        if (sendto(sock, response, strlen(response), 0,
+                   (struct sockaddr *)&client, client_len) < 0)
+            perror("sendto");
+    }
+
+    close(sock);
+    return 0;
+}
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+
+#define PORT 8094
+#define SIZE 1024
+
+int main(void)
+{
+    int sock;
+    struct sockaddr_in server;
+    struct timeval timeout = {3, 0};
+    socklen_t server_len = sizeof(server);
+    char regno[20], response[SIZE];
+
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+               &timeout, sizeof(timeout));
+
+    memset(&server, 0, sizeof(server));
+    server.sin_family = AF_INET;
+    server.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server.sin_addr);
+
+    while (1) {
+        printf("\n===== STUDENT INFORMATION LOOKUP =====\n");
+        printf("Enter registration number (0 to exit): ");
+
+        if (scanf("%19s", regno) != 1)
+            break;
+
+        if (strcmp(regno, "0") == 0) {
+            printf("Client terminated.\n");
+            break;
+        }
+
+        if (strlen(regno) >= sizeof(regno) - 1) {
+            printf("Registration number is too long.\n");
+            continue;
+        }
+
+        if (sendto(sock, regno, strlen(regno), 0,
+                   (struct sockaddr *)&server,
+                   sizeof(server)) < 0) {
+            perror("sendto");
+            continue;
+        }
+
+        ssize_t n = recvfrom(sock, response, sizeof(response) - 1,
+                             0, (struct sockaddr *)&server,
+                             &server_len);
+
+        if (n < 0) {
+            printf("Server timeout. Please try again.\n");
+            continue;
+        }
+
+        response[n] = '\0';
+
+        printf("\n--- SERVER RESPONSE ---\n%s\n", response);
+    }
+
+    close(sock);
+    return 0;
+}
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <time.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8090
+#define SIZE 2048
+#define MAX_BOOKINGS 200
+
+typedef struct {
+    int id;
+    char name[40];
+    char source[30];
+    char destination[30];
+    int seats;
+    int fare;
+} Train;
+
+typedef struct {
+    int booking_id;
+    int train_id;
+    int seats;
+    int active;
+    char passenger[40];
+} Booking;
+
+Train trains[] = {
+    {101, "ChennaiExpress", "Chennai", "Madurai", 50, 250},
+    {102, "PandianExpress", "Chennai", "Ramanathapuram", 40, 300},
+    {103, "VaigaiExpress", "Chennai", "Trichy", 30, 200}
+};
+
+int train_count = 3;
+Booking bookings[MAX_BOOKINGS];
+int booking_count = 0;
+int next_booking_id = 1001;
+
+int send_line(int fd, const char *msg)
+{
+    char out[SIZE];
+    int len = snprintf(out, sizeof(out), "%s\n", msg);
+
+    if (len < 0 || len >= SIZE)
+        return -1;
+
+    int sent = 0;
+
+    while (sent < len) {
+        ssize_t n = send(fd, out + sent, len - sent, 0);
+
+        if (n <= 0)
+            return -1;
+
+        sent += (int)n;
+    }
+
+    return 0;
+}
+
+int recv_line(int fd, char *buffer, size_t size)
+{
+    size_t i = 0;
+    char ch;
+
+    while (i < size - 1) {
+        ssize_t n = recv(fd, &ch, 1, 0);
+
+        if (n <= 0)
+            return 0;
+
+        if (ch == '\n')
+            break;
+
+        if (ch != '\r')
+            buffer[i++] = ch;
+    }
+
+    buffer[i] = '\0';
+    return 1;
+}
+
+void log_event(const char *event)
+{
+    FILE *fp = fopen("railway_log.txt", "a");
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char timestamp[30] = "unknown-time";
+
+    if (tm_info != NULL) {
+        strftime(timestamp, sizeof(timestamp),
+                 "%Y-%m-%d %H:%M:%S", tm_info);
+    }
+
+    printf("[%s] %s\n", timestamp, event);
+
+    if (fp != NULL) {
+        fprintf(fp, "[%s] %s\n", timestamp, event);
+        fclose(fp);
+    }
+}
+
+int find_train(int id)
+{
+    for (int i = 0; i < train_count; i++) {
+        if (trains[i].id == id)
+            return i;
+    }
+
+    return -1;
+}
+
+int available_seats(int train_id)
+{
+    int index = find_train(train_id);
+
+    if (index < 0)
+        return -1;
+
+    int booked = 0;
+
+    for (int i = 0; i < booking_count; i++) {
+        if (bookings[i].train_id == train_id &&
+            bookings[i].active) {
+            booked += bookings[i].seats;
+        }
+    }
+
+    return trains[index].seats - booked;
+}
+
+int save_bookings(void)
+{
+    FILE *fp = fopen("railway_bookings.txt", "w");
+
+    if (fp == NULL) {
+        perror("railway_bookings.txt");
+        return 0;
+    }
+
+    for (int i = 0; i < booking_count; i++) {
+        fprintf(fp, "%d %d %d %d %s\n",
+                bookings[i].booking_id,
+                bookings[i].train_id,
+                bookings[i].seats,
+                bookings[i].active,
+                bookings[i].passenger);
+    }
+
+    fclose(fp);
+    return 1;
+}
+
+void load_bookings(void)
+{
+    FILE *fp = fopen("railway_bookings.txt", "r");
+
+    if (fp == NULL)
+        return;
+
+    while (booking_count < MAX_BOOKINGS &&
+           fscanf(fp, "%d %d %d %d %39s",
+                  &bookings[booking_count].booking_id,
+                  &bookings[booking_count].train_id,
+                  &bookings[booking_count].seats,
+                  &bookings[booking_count].active,
+                  bookings[booking_count].passenger) == 5) {
+
+        if (bookings[booking_count].booking_id >= next_booking_id)
+            next_booking_id =
+                bookings[booking_count].booking_id + 1;
+
+        booking_count++;
+    }
+
+    fclose(fp);
+}
+
+void search_trains(int fd)
+{
+    char response[SIZE] = "";
+
+    for (int i = 0; i < train_count; i++) {
+        char item[200];
+
+        int len = snprintf(item, sizeof(item),
+            "%d %s %s-%s Fare=%d Available=%d; ",
+            trains[i].id,
+            trains[i].name,
+            trains[i].source,
+            trains[i].destination,
+            trains[i].fare,
+            available_seats(trains[i].id));
+
+        if (len < 0 || (size_t)len >= sizeof(item))
+            continue;
+
+        size_t used = strlen(response);
+        size_t remaining = sizeof(response) - used - 1;
+
+        if ((size_t)len > remaining)
+            break;
+
+        memcpy(response + used, item, (size_t)len + 1);
+    }
+
+    send_line(fd, response);
+}
+
+void process_request(int fd, char *request)
+{
+    char response[SIZE];
+    int id, seats;
+
+    if (strcmp(request, "SEARCH") == 0) {
+        search_trains(fd);
+        log_event("Train search performed");
+    }
+    else if (strncmp(request, "AVAIL|", 6) == 0 &&
+             sscanf(request + 6, "%d", &id) == 1) {
+
+        int index = find_train(id);
+
+        if (index < 0) {
+            send_line(fd, "ERROR: Train not found.");
+        } else {
+            snprintf(response, sizeof(response),
+                "%s: Available seats=%d Fare=%d",
+                trains[index].name,
+                available_seats(id),
+                trains[index].fare);
+
+            send_line(fd, response);
+        }
+    }
+    else if (strncmp(request, "BOOK|", 5) == 0) {
+        int train_id;
+        char passenger[40];
+
+        if (sscanf(request, "BOOK|%d|%39[^|]|%d",
+                   &train_id, passenger, &seats) != 3 ||
+            seats <= 0 || strchr(passenger, ' ')) {
+            send_line(fd, "ERROR: Invalid booking details.");
+            return;
+        }
+
+        int index = find_train(train_id);
+
+        if (index < 0) {
+            send_line(fd, "ERROR: Train not found.");
+            return;
+        }
+
+        if (seats > available_seats(train_id)) {
+            send_line(fd, "ERROR: Not enough seats available.");
+            return;
+        }
+
+        if (booking_count >= MAX_BOOKINGS) {
+            send_line(fd, "ERROR: Booking database is full.");
+            return;
+        }
+
+        Booking b;
+        b.booking_id = next_booking_id++;
+        b.train_id = train_id;
+        b.seats = seats;
+        b.active = 1;
+
+        snprintf(b.passenger, sizeof(b.passenger),
+                 "%s", passenger);
+
+        bookings[booking_count++] = b;
+
+        if (!save_bookings()) {
+            booking_count--;
+            next_booking_id--;
+            send_line(fd, "ERROR: Could not save booking.");
+            return;
+        }
+
+        snprintf(response, sizeof(response),
+            "BOOKED: BookingID=%d Train=%s Passenger=%s Seats=%d TotalFare=%d",
+            b.booking_id,
+            trains[index].name,
+            b.passenger,
+            b.seats,
+            b.seats * trains[index].fare);
+
+        send_line(fd, response);
+        log_event(response);
+    }
+    else if (strncmp(request, "CANCEL|", 7) == 0 &&
+             sscanf(request + 7, "%d", &id) == 1) {
+
+        int found = -1;
+
+        for (int i = 0; i < booking_count; i++) {
+            if (bookings[i].booking_id == id &&
+                bookings[i].active) {
+                found = i;
+                break;
+            }
+        }
+
+        if (found < 0) {
+            send_line(fd, "ERROR: Active booking not found.");
+        } else {
+            bookings[found].active = 0;
+
+            if (!save_bookings()) {
+                bookings[found].active = 1;
+                send_line(fd, "ERROR: Could not save cancellation.");
+                return;
+            }
+
+            snprintf(response, sizeof(response),
+                     "CANCELLED: BookingID=%d", id);
+
+            send_line(fd, response);
+            log_event(response);
+        }
+    }
+    else if (strncmp(request, "STATUS|", 7) == 0 &&
+             sscanf(request + 7, "%d", &id) == 1) {
+
+        int found = -1;
+
+        for (int i = 0; i < booking_count; i++) {
+            if (bookings[i].booking_id == id) {
+                found = i;
+                break;
+            }
+        }
+
+        if (found < 0) {
+            send_line(fd, "ERROR: Booking not found.");
+        } else {
+            Booking *b = &bookings[found];
+            int index = find_train(b->train_id);
+
+            snprintf(response, sizeof(response),
+                "BookingID=%d Passenger=%s Train=%s Seats=%d Status=%s",
+                b->booking_id,
+                b->passenger,
+                index >= 0 ? trains[index].name : "Unknown",
+                b->seats,
+                b->active ? "CONFIRMED" : "CANCELLED");
+
+            send_line(fd, response);
+        }
+    }
+    else if (strcmp(request, "EXIT") == 0) {
+        send_line(fd, "Goodbye.");
+    }
+    else {
+        send_line(fd, "ERROR: Invalid request.");
+        log_event("Invalid client request");
+    }
+}
+
+int main(void)
+{
+    int server_fd, client_fd, opt = 1;
+    struct sockaddr_in address;
+
+    load_bookings();
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_fd < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
+               &opt, sizeof(opt));
+
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&address,
+             sizeof(address)) < 0) {
+        perror("bind");
+        close(server_fd);
+        return 1;
+    }
+
+    if (listen(server_fd, 5) < 0) {
+        perror("listen");
+        close(server_fd);
+        return 1;
+    }
+
+    printf("Railway Reservation Server running on port %d\n", PORT);
+
+    while (1) {
+        printf("Waiting for a client...\n");
+
+        client_fd = accept(server_fd, NULL, NULL);
+
+        if (client_fd < 0) {
+            perror("accept");
+            continue;
+        }
+
+        printf("Client connected.\n");
+
+        char request[SIZE];
+
+        while (recv_line(client_fd, request, sizeof(request))) {
+            process_request(client_fd, request);
+
+            if (strcmp(request, "EXIT") == 0)
+                break;
+        }
+
+        close(client_fd);
+        log_event("Client disconnected");
+    }
+
+    close(server_fd);
+    return 0;
+}
+
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8090
+#define SIZE 2048
+
+int send_line(int fd, const char *msg)
+{
+    char out[SIZE];
+    int len = snprintf(out, sizeof(out), "%s\n", msg);
+    if (len < 0 || len >= SIZE) return -1;
+
+    int sent = 0;
+    while (sent < len) {
+        ssize_t n = send(fd, out + sent, len - sent, 0);
+        if (n <= 0) return -1;
+        sent += (int)n;
+    }
+    return 0;
+}
+
+int recv_line(int fd, char *buf, size_t size)
+{
+    size_t i = 0;
+    char c;
+
+    while (i < size - 1) {
+        ssize_t n = recv(fd, &c, 1, 0);
+        if (n <= 0) return 0;
+        if (c == '\n') break;
+        if (c != '\r') buf[i++] = c;
+    }
+    buf[i] = '\0';
+    return 1;
+}
+
+int main(void)
+{
+    int sock;
+    struct sockaddr_in addr;
+    char request[SIZE], response[SIZE];
+    int choice, train_id, seats, booking_id;
+    char name[40];
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("connect");
+        close(sock);
+        return 1;
+    }
+
+    printf("Connected to Railway Reservation Server.\n");
+
+    while (1) {
+        printf("\n===== RAILWAY RESERVATION =====\n");
+        printf("1. Search trains\n");
+        printf("2. Check seat availability\n");
+        printf("3. Book tickets\n");
+        printf("4. Cancel reservation\n");
+        printf("5. View booking status\n");
+        printf("6. Exit\n");
+        printf("Enter choice: ");
+
+        if (scanf("%d", &choice) != 1) {
+            int ch;
+            while ((ch = getchar()) != '\n' && ch != EOF) {}
+            printf("Invalid input.\n");
+            continue;
+        }
+
+        switch (choice) {
+        case 1:
+            strcpy(request, "SEARCH");
+            break;
+
+        case 2:
+            printf("Enter train ID (101, 102, 103): ");
+            scanf("%d", &train_id);
+            snprintf(request, sizeof(request), "AVAIL|%d", train_id);
+            break;
+
+        case 3:
+            printf("Enter train ID: ");
+            scanf("%d", &train_id);
+            printf("Enter passenger name (no spaces): ");
+            scanf("%39s", name);
+            printf("Enter number of seats: ");
+            scanf("%d", &seats);
+
+            snprintf(request, sizeof(request),
+                     "BOOK|%d|%s|%d", train_id, name, seats);
+            break;
+
+        case 4:
+            printf("Enter booking ID: ");
+            scanf("%d", &booking_id);
+            snprintf(request, sizeof(request),
+                     "CANCEL|%d", booking_id);
+            break;
+
+        case 5:
+            printf("Enter booking ID: ");
+            scanf("%d", &booking_id);
+            snprintf(request, sizeof(request),
+                     "STATUS|%d", booking_id);
+            break;
+
+        case 6:
+            strcpy(request, "EXIT");
+            send_line(sock, request);
+            if (recv_line(sock, response, sizeof(response)))
+                printf("%s\n", response);
+            close(sock);
+            return 0;
+
+        default:
+            printf("Choose a number from 1 to 6.\n");
+            continue;
+        }
+
+        if (send_line(sock, request) < 0 ||
+            !recv_line(sock, response, sizeof(response))) {
+            printf("Server disconnected.\n");
+            break;
+        }
+
+        printf("Server: %s\n", response);
+    }
+
+    close(sock);
+    return 0;
+}
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8086
+#define BUFFER_SIZE 2048
+
+int main(void)
+{
+    int sock;
+    struct sockaddr_in server_addr;
+    char buffer[BUFFER_SIZE];
+    char input[200];
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (sock < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+
+    if (connect(sock, (struct sockaddr *)&server_addr,
+                sizeof(server_addr)) < 0) {
+        perror("connect");
+        close(sock);
+        return 1;
+    }
+
+    printf("Connected to examination server.\n");
+
+    while (1) {
+        ssize_t n = recv(sock, buffer, sizeof(buffer) - 1, 0);
+
+        if (n <= 0) {
+            printf("Server disconnected.\n");
+            break;
+        }
+
+        buffer[n] = '\0';
+        printf("%s", buffer);
+        fflush(stdout);
+
+        if (strstr(buffer, "You have logged out.") != NULL)
+            break;
+
+        printf(" ");
+        fflush(stdout);
+
+        if (fgets(input, sizeof(input), stdin) == NULL)
+            break;
+
+        input[strcspn(input, "\r\n")] = '\0';
+
+        if (send(sock, input, strlen(input), 0) < 0)
+            break;
+
+        if (strcmp(input, "EXIT") == 0)
+            break;
+    }
+
+    close(sock);
+    return 0;
+}
+
+#include <ctype.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <arpa/inet.h>
+#include <time.h>
+#include <sys/socket.h>
+
+#define PORT 8086
+#define MAX_CLIENTS 10
+#define BUFFER_SIZE 2048
+
+pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t data_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+typedef struct {
+    int socket;
+    char username[50];
+} Student;
+
+typedef struct {
+    char question[200];
+    char options[4][100];
+    char answer;
+} Question;
+
+Question questions[] = {
+    {"Which language is used for system programming?",
+     {"A. HTML", "B. C", "C. CSS", "D. XML"}, 'B'},
+
+    {"Which protocol is connection-oriented?",
+     {"A. UDP", "B. IP", "C. TCP", "D. ARP"}, 'C'},
+
+    {"Which function creates a thread in POSIX?",
+     {"A. pthread_create", "B. fork", "C. socket", "D. accept"}, 'A'}
+};
+
+#define TOTAL_QUESTIONS (sizeof(questions) / sizeof(questions[0]))
+
+void log_activity(const char *message)
+{
+    time_t now = time(NULL);
+    char timestamp[30];
+
+    strftime(timestamp, sizeof(timestamp),
+             "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+    pthread_mutex_lock(&log_mutex);
+    FILE *fp = fopen("exam_log.txt", "a");
+
+    if (fp != NULL) {
+        fprintf(fp, "[%s] %s\n", timestamp, message);
+        fclose(fp);
+    }
+
+    printf("[%s] %s\n", timestamp, message);
+    pthread_mutex_unlock(&log_mutex);
+}
+
+int send_text(int sock, const char *message)
+{
+    return send(sock, message, strlen(message), 0);
+}
+
+int receive_text(int sock, char *buffer, size_t size)
+{
+    ssize_t n = recv(sock, buffer, size - 1, 0);
+
+    if (n <= 0)
+        return 0;
+
+    buffer[n] = '\0';
+
+    buffer[strcspn(buffer, "\r\n")] = '\0';
+    return 1;
+}
+
+void *handle_student(void *arg)
+{
+    Student *student = (Student *)arg;
+    int sock = student->socket;
+    char username[50];
+    char password[50];
+    char buffer[BUFFER_SIZE];
+    char logmsg[200];
+    int score = 0;
+    int authenticated = 0;
+
+    snprintf(logmsg, sizeof(logmsg),
+             "Client connected: socket %d", sock);
+    log_activity(logmsg);
+
+    send_text(sock, "=== ONLINE EXAMINATION SYSTEM ===\n");
+    send_text(sock, "Username: ");
+
+    if (!receive_text(sock, username, sizeof(username)))
+        goto cleanup;
+
+    send_text(sock, "Password: ");
+
+    if (!receive_text(sock, password, sizeof(password)))
+        goto cleanup;
+
+    /*
+       Sample credentials:
+       student1 / pass123
+       student2 / pass456
+    */
+    if ((strcmp(username, "student1") == 0 &&
+         strcmp(password, "pass123") == 0) ||
+        (strcmp(username, "student2") == 0 &&
+         strcmp(password, "pass456") == 0)) {
+        authenticated = 1;
+    }
+
+    if (!authenticated) {
+        send_text(sock, "Invalid username or password.\n");
+        snprintf(logmsg, sizeof(logmsg),
+                 "Authentication failed for %s", username);
+        log_activity(logmsg);
+        goto cleanup;
+    }
+
+    snprintf(student->username, sizeof(student->username),
+             "%s", username);
+
+    snprintf(logmsg, sizeof(logmsg),
+             "Student %s logged in successfully", username);
+    log_activity(logmsg);
+
+    send_text(sock,
+        "\nLogin successful!\n"
+        "Commands: EXAM, SCORE, EXIT\n");
+
+    while (1) {
+        send_text(sock, "\nEnter command: ");
+
+        if (!receive_text(sock, buffer, sizeof(buffer)))
+            break;
+
+        if (strcasecmp(buffer, "EXAM") == 0) {
+            score = 0;
+
+            for (int i = 0; i < TOTAL_QUESTIONS; i++) {
+                char question_text[700];
+
+                snprintf(question_text, sizeof(question_text),
+                    "\nQuestion %d: %s\n%s\n%s\n%s\n%s\nYour answer (A/B/C/D): ",
+                    i + 1,
+                    questions[i].question,
+                    questions[i].options[0],
+                    questions[i].options[1],
+                    questions[i].options[2],
+                    questions[i].options[3]);
+
+                if (send_text(sock, question_text) < 0)
+                    goto cleanup;
+
+                if (!receive_text(sock, buffer, sizeof(buffer)))
+                    goto cleanup;
+
+                if (toupper((unsigned char)buffer[0]) ==
+                    questions[i].answer) {
+                    score++;
+                }
+            }
+
+            pthread_mutex_lock(&data_mutex);
+            snprintf(logmsg, sizeof(logmsg),
+                     "Exam submitted by %s, score %d/%zu",
+                     username, score, TOTAL_QUESTIONS);
+            pthread_mutex_unlock(&data_mutex);
+
+            log_activity(logmsg);
+
+            snprintf(buffer, sizeof(buffer),
+                "\nExam completed! Your score: %d/%zu\n",
+                score, TOTAL_QUESTIONS);
+            send_text(sock, buffer);
+        }
+        else if (strcasecmp(buffer, "SCORE") == 0) {
+            snprintf(buffer, sizeof(buffer),
+                "Latest score: %d/%zu\n", score, TOTAL_QUESTIONS);
+            send_text(sock, buffer);
+        }
+        else if (strcasecmp(buffer, "EXIT") == 0) {
+            send_text(sock, "You have logged out.\n");
+            break;
+        }
+        else {
+            send_text(sock,
+                "Invalid command. Use EXAM, SCORE, or EXIT.\n");
+            log_activity("Invalid client command received");
+        }
+    }
+
+cleanup:
+    snprintf(logmsg, sizeof(logmsg),
+             "Client disconnected: socket %d", sock);
+    log_activity(logmsg);
+
+    close(sock);
+    free(student);
+    return NULL;
+}
+
+int main(void)
+{
+    int server_fd;
+    int client_fd;
+    int opt = 1;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t client_len = sizeof(client_addr);
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_fd < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
+               &opt, sizeof(opt));
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr,
+             sizeof(server_addr)) < 0) {
+        perror("bind");
+        close(server_fd);
+        return 1;
+    }
+
+    if (listen(server_fd, MAX_CLIENTS) < 0) {
+        perror("listen");
+        close(server_fd);
+        return 1;
+    }
+
+    printf("Exam server running on port %d...\n", PORT);
+    printf("Waiting for students...\n");
+
+    while (1) {
+        client_fd = accept(server_fd,
+            (struct sockaddr *)&client_addr, &client_len);
+
+        if (client_fd < 0) {
+            perror("accept");
+            continue;
+        }
+
+        Student *student = calloc(1, sizeof(Student));
+
+        if (student == NULL) {
+            close(client_fd);
+            continue;
+        }
+
+        student->socket = client_fd;
+
+        pthread_t thread;
+
+        if (pthread_create(&thread, NULL,
+                           handle_student, student) != 0) {
+            perror("pthread_create");
+            close(client_fd);
+            free(student);
+            continue;
+        }
+
+        pthread_detach(thread);
+    }
+
+    close(server_fd);
+    return 0;
+}
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <time.h>
+
+#define PORT 8087
+#define MAX_CLIENTS 20
+#define BUFFER_SIZE 1024
+
+int clients[MAX_CLIENTS];
+char names[MAX_CLIENTS][50];
+int client_count = 0;
+
+pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void broadcast_message(const char *message, int sender)
+{
+    pthread_mutex_lock(&clients_mutex);
+
+    for (int i = 0; i < client_count; i++) {
+        if (clients[i] != sender) {
+            if (send(clients[i], message, strlen(message), 0) < 0) {
+                perror("send");
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+void remove_client(int sock)
+{
+    pthread_mutex_lock(&clients_mutex);
+
+    for (int i = 0; i < client_count; i++) {
+        if (clients[i] == sock) {
+            for (int j = i; j < client_count - 1; j++) {
+                clients[j] = clients[j + 1];
+                strcpy(names[j], names[j + 1]);
+            }
+
+            client_count--;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+void *handle_client(void *arg)
+{
+    int sock = *(int *)arg;
+    free(arg);
+
+    char buffer[BUFFER_SIZE];
+    char username[50];
+    char message[BUFFER_SIZE + 100];
+    char timestamp[30];
+    time_t now;
+
+    send(sock, "Enter your username: ", 21, 0);
+
+    ssize_t n = recv(sock, username, sizeof(username) - 1, 0);
+
+    if (n <= 0)
+        goto disconnect;
+
+    username[n] = '\0';
+    username[strcspn(username, "\r\n")] = '\0';
+
+    if (strlen(username) == 0)
+        snprintf(username, sizeof(username), "Guest");
+
+    pthread_mutex_lock(&clients_mutex);
+
+    if (client_count >= MAX_CLIENTS) {
+        pthread_mutex_unlock(&clients_mutex);
+        send(sock, "Server is full.\n", 16, 0);
+        goto disconnect;
+    }
+
+    clients[client_count] = sock;
+    snprintf(names[client_count], sizeof(names[client_count]),
+             "%s", username);
+    client_count++;
+
+    pthread_mutex_unlock(&clients_mutex);
+
+    snprintf(message, sizeof(message),
+             "*** %s joined the chat ***\n", username);
+
+    printf("%s", message);
+    broadcast_message(message, sock);
+
+    send(sock,
+         "Welcome! Type messages to chat. Type /exit to leave.\n",
+         53, 0);
+
+    while (1) {
+        n = recv(sock, buffer, sizeof(buffer) - 1, 0);
+
+        if (n <= 0)
+            break;
+
+        buffer[n] = '\0';
+        buffer[strcspn(buffer, "\r\n")] = '\0';
+
+        if (strcmp(buffer, "/exit") == 0)
+            break;
+
+        if (strlen(buffer) == 0)
+            continue;
+
+        now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+
+        strftime(timestamp, sizeof(timestamp),
+                 "%H:%M:%S", tm_info);
+
+        snprintf(message, sizeof(message),
+                 "[%s] %s: %s\n", timestamp, username, buffer);
+
+        printf("%s", message);
+        broadcast_message(message, sock);
+    }
+
+disconnect:
+    remove_client(sock);
+
+    snprintf(message, sizeof(message),
+             "*** %s disconnected ***\n", username);
+
+    printf("%s", message);
+    broadcast_message(message, sock);
+
+    close(sock);
+    return NULL;
+}
+
+int main(void)
+{
+    int server_fd, client_fd;
+    int opt = 1;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_fd < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
+               &opt, sizeof(opt));
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&server_addr,
+             sizeof(server_addr)) < 0) {
+        perror("bind");
+        close(server_fd);
+        return 1;
+    }
+
+    if (listen(server_fd, MAX_CLIENTS) < 0) {
+        perror("listen");
+        close(server_fd);
+        return 1;
+    }
+
+    printf("Chat server running on port %d...\n", PORT);
+    printf("Waiting for clients...\n");
+
+    while (1) {
+        client_fd = accept(server_fd,
+            (struct sockaddr *)&client_addr, &addr_len);
+
+        if (client_fd < 0) {
+            perror("accept");
+            continue;
+        }
+
+        int *new_sock = malloc(sizeof(int));
+
+        if (new_sock == NULL) {
+            close(client_fd);
+            continue;
+        }
+
+        *new_sock = client_fd;
+
+        pthread_t thread;
+
+        if (pthread_create(&thread, NULL,
+                           handle_client, new_sock) != 0) {
+            perror("pthread_create");
+            close(client_fd);
+            free(new_sock);
+            continue;
+        }
+
+        pthread_detach(thread);
+    }
+
+    close(server_fd);
+    return 0;
+}
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8087
+#define BUFFER_SIZE 1024
+
+int sock;
+
+void *receive_messages(void *arg)
+{
+    char buffer[BUFFER_SIZE];
+    ssize_t n;
+
+    while ((n = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0) {
+        buffer[n] = '\0';
+        printf("\n%s", buffer);
+        printf("Message: ");
+        fflush(stdout);
+    }
+
+    printf("\nDisconnected from chat server.\n");
+    exit(0);
+    return NULL;
+}
+
+int main(void)
+{
+    struct sockaddr_in server_addr;
+    char input[BUFFER_SIZE];
+    pthread_t receiver;
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (sock < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+
+    if (connect(sock, (struct sockaddr *)&server_addr,
+                sizeof(server_addr)) < 0) {
+        perror("connect");
+        close(sock);
+        return 1;
+    }
+
+    printf("Connected to chat server.\n");
+
+    /*
+       Receive the username prompt before sending the username.
+    */
+    ssize_t n = recv(sock, input, sizeof(input) - 1, 0);
+
+    if (n <= 0) {
+        printf("Server disconnected.\n");
+        close(sock);
+        return 1;
+    }
+
+    input[n] = '\0';
+    printf("%s", input);
+    fflush(stdout);
+
+    if (fgets(input, sizeof(input), stdin) == NULL) {
+        close(sock);
+        return 1;
+    }
+
+    input[strcspn(input, "\r\n")] = '\0';
+
+    if (send(sock, input, strlen(input), 0) < 0) {
+        perror("send");
+        close(sock);
+        return 1;
+    }
+
+    if (pthread_create(&receiver, NULL,
+                       receive_messages, NULL) != 0) {
+        perror("pthread_create");
+        close(sock);
+        return 1;
+    }
+
+    printf("Type /exit to leave the chat.\n");
+
+    while (1) {
+        printf("Message: ");
+        fflush(stdout);
+
+        if (fgets(input, sizeof(input), stdin) == NULL)
+            break;
+
+        input[strcspn(input, "\r\n")] = '\0';
+
+        if (send(sock, input, strlen(input), 0) < 0)
+            break;
+
+        if (strcmp(input, "/exit") == 0)
+            break;
+    }
+
+    shutdown(sock, SHUT_RDWR);
+    close(sock);
+    return 0;
+}
+
+
+
+
+
+
+
